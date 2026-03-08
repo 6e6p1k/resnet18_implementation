@@ -7,11 +7,9 @@ _src  = _here.parent                           # src/
 
 sys.path.append(str(_src))
 sys.path.append(str(_here))
-
 from torch import nn
-from freq_amp_layer import freq_amp_layer  # src/models/ is already the run location
+from freq_amp_layer import freq_amp_layer_keras, freq_amp_layer_torch
 from keras import layers
-from torch_to_keras_layer import torch_to_keras_layer  # found in src/
 
 
 class freq_amp_block_torch(nn.Module):
@@ -30,7 +28,7 @@ class freq_amp_block_torch(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channels)
-        self.freq_amp = freq_amp_layer(amp_factor=amp_factor, thresh_quantile=thresh_quantile)
+        self.freq_amp = freq_amp_layer_torch(amp_factor=amp_factor, thresh_quantile=thresh_quantile)
 
         # shortcut path
         self.shortcut = nn.Sequential()
@@ -77,7 +75,7 @@ def freq_amp_block_keras(x, out_channels, stride=1, amp_factor=2.0, thresh_quant
         shortcut = layers.BatchNormalization()(shortcut)
 
     # amplify weak frequencies
-    shortcut = torch_to_keras_layer(freq_amp_layer(amp_factor=amp_factor, thresh_quantile=thresh_quantile))(shortcut)
+    shortcut = freq_amp_layer_keras(amp_factor=amp_factor, thresh_quantile=thresh_quantile)(shortcut)
 
     # merge
     x = layers.Add()([x, shortcut])
