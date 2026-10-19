@@ -1,6 +1,10 @@
 from torch import nn
-import keras
-from keras import layers
+
+try:
+    import keras
+    from keras import layers
+except ImportError:  # keras is optional: only basic_block_keras needs it
+    keras = layers = None
 
 # torch
 class basic_block_torch(nn.Module):
@@ -33,8 +37,9 @@ class basic_block_torch(nn.Module):
         out = self.conv2(out)
         out = self.bn2(out)
 
-        # merge 
-        out.add(self.shortcut(x))
+        # merge. Tensor.add() is out-of-place and its result was discarded,
+        # which silently removed the skip connection; reassign instead.
+        out = out + self.shortcut(x)
         out = self.relu(out)
 
         return out

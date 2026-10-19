@@ -1,15 +1,11 @@
-import os
-import sys
-from pathlib import Path
-
-_here = Path(__file__).resolve().parent        # src/models/
-_src  = _here.parent                           # src/
-
-sys.path.append(str(_src))
-sys.path.append(str(_here))
 from torch import nn
-from freq_amp_layer import freq_amp_layer_keras, freq_amp_layer_torch
-from keras import layers
+
+from src.models.freq_amp_layer import freq_amp_layer_keras, freq_amp_layer_torch
+
+try:
+    from keras import layers
+except ImportError:  # keras is optional: only freq_amp_block_keras needs it
+    layers = None
 
 
 class freq_amp_block_torch(nn.Module):

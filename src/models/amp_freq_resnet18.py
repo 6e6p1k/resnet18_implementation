@@ -1,5 +1,8 @@
-import keras
-from keras import layers
+try:
+    import keras
+    from keras import layers
+except ImportError:  # keras is optional: only the *_keras builders need it
+    keras = layers = None
 from torch import nn
 from src.models.freq_amp_res_block import freq_amp_block_keras, freq_amp_block_torch
 

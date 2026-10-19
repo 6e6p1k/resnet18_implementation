@@ -1,246 +1,101 @@
+"""FreqAmp: amplify the weak coefficients of a feature map's 2-D spectrum.
+
+``freq_amp`` is the function, ``freq_amp_layer_torch`` the ``nn.Module`` and,
+when Keras is installed, ``freq_amp_layer_keras`` a Keras layer for the torch
+backend (it calls torch ops directly, so it does not work on other backends).
+"""
 import torch
 from torch import nn
 from torch import fft
-import keras 
-from keras import ops
+
+try:
+    import keras
+except ImportError:  # keras is optional: only freq_amp_layer_keras needs it
+    keras = None
+
+
+def freq_amp(x, amp_factor=2.0, thresh_quantile=0.3, dims=(-2, -1)):
+    """Multiply low-magnitude frequency coefficients of ``x`` by ``amp_factor``.
+
+    Steps:
+        1. ``z = rfftn(x)`` over ``dims`` (the last FFT dim keeps only the
+           non-redundant half, ``W // 2 + 1``).
+        2. ``mag = |z|``.
+        3. One threshold per leading index (sample and channel for a
+           ``(B, C, H, W)`` input): the ``thresh_quantile`` quantile of ``mag``
+           over the flattened FFT dims.
+        4. Coefficients with ``mag < thresh`` are scaled by ``amp_factor``;
+           the rest are left alone.
+        5. ``irfftn`` back, with ``s`` set to the original sizes. Without ``s``
+           irfftn assumes an even last dimension and returns one column fewer
+           for odd widths (7x7 -> 7x6), which breaks the residual add.
+
+    The mask depends on the data, so the layer is non-linear. It has no
+    parameters; gradients flow through ``z * scale`` with the mask treated as
+    a constant. ``dims`` must be contiguous trailing dimensions.
+
+    Args:
+        x: real tensor, e.g. ``(B, C, H, W)``.
+        amp_factor: > 1 amplifies weak coefficients, 1 is the identity,
+            < 1 suppresses them.
+        thresh_quantile: fraction of coefficients counted as weak, e.g. 0.3
+            means the bottom 30% by magnitude per sample and channel.
+        dims: dimensions to transform, normally the spatial ``(-2, -1)``.
+
+    Returns:
+        A real tensor with the same shape and dtype as ``x``.
+    """
+    dims = tuple(dims)
+    sizes = [x.shape[d] for d in dims]
+    z = fft.rfftn(x, dim=dims)                                   # (..., H, W//2+1), complex
+    mag = torch.abs(z)                                           # (..., H, W//2+1), real
+    mag_flat = mag.flatten(start_dim=dims[0], end_dim=dims[-1])  # (..., H*(W//2+1))
+    thresh = torch.quantile(mag_flat, thresh_quantile, dim=-1, keepdim=True)
+    for _ in range(len(dims) - 1):
+        thresh = thresh.unsqueeze(-1)                            # (..., 1, 1) for broadcasting
+    mask = (mag < thresh).to(mag.dtype)
+    scale = 1.0 + (amp_factor - 1.0) * mask
+    return fft.irfftn(z * scale, s=sizes, dim=dims)
 
 
 class freq_amp_layer_torch(nn.Module):
+    """Frequency-domain amplification layer for ``(B, C, H, W)`` input.
+
+    See :func:`freq_amp` for the computation. Amplifying weak coefficients
+    also amplifies noise, so the effect has to be validated on the task.
     """
-    Frequency-domain amplification layer.
 
-    This layer applies a real FFT over the last two spatial dimensions,
-    identifies low-magnitude frequency coefficients, and amplifies them
-    by a fixed factor. The threshold is defined per sample and per channel
-    using a magnitude quantile over the 2D frequency map.
-
-    Steps:
-        1. Transform input to the frequency domain with `rfftn`.
-        2. Compute the magnitude of each frequency coefficient.
-        3. Compute a per-(batch, channel) threshold using `thresh_quantile`.
-        4. Mark coefficients with magnitude below the threshold as "weak".
-        5. Multiply weak coefficients by `amp_factor`.
-        6. Transform back to the spatial domain with `irfftn`.
-
-    Args:
-        amp_factor (float, default=2.0):
-            Multiplicative boost applied to weak frequency coefficients.
-            - `amp_factor > 1.0` amplifies weak frequencies
-            - `amp_factor = 1.0` leaves them unchanged
-            - `amp_factor < 1.0` suppresses them
-
-        thresh_quantile (float, default=0.3):
-            Quantile used to define weak coefficients. For example,
-            `0.3` means the bottom 30% of frequency magnitudes
-            (per sample, per channel) are considered weak.
-
-        dims (tuple[int, int], default=(-2, -1)):
-            Dimensions over which to apply the FFT. Typically these are
-            the last two spatial dimensions `(H, W)`.
-
-    Input:
-        x (Tensor):
-            Real-valued tensor of shape `(B, C, H, W)`.
-
-    Output:
-        Tensor:
-            Real-valued tensor of shape `(B, C, H, W)`.
-
-    Notes:
-        - Because `rfftn` is used, only the non-redundant half of the last
-          frequency dimension is stored internally.
-        - The threshold is computed independently for each batch element
-          and channel.
-        - Amplifying low-magnitude frequencies may also amplify noise, so
-          the effect should be validated for the target task.
-    """
     def __init__(self, amp_factor=2.0, thresh_quantile=0.3, dims=(-2, -1)):
         super().__init__()
-        self.amp_factor = amp_factor  # how much to boost weak freq
-        self.thresh_quantile = thresh_quantile  # e.g., boost bottom 30% magnitudes
-        self.dims = dims
+        self.amp_factor = float(amp_factor)
+        self.thresh_quantile = float(thresh_quantile)
+        self.dims = tuple(dims)
 
     def forward(self, x):
+        return freq_amp(x, self.amp_factor, self.thresh_quantile, self.dims)
 
-        # fft last 2 dims (H, W)
-        z = fft.rfftn(x, dim=self.dims)
-        # out shape = (B, C, H, W_r)
-        # where W_r = W // 2 + 1
-        # out dtype = torch.complex64 
-
-        # compute abs value 
-        mag = torch.abs(z)
-        # out shape = (B, C H, W_r)
-        # out dtype = float32
-
-        # Compute threshold: e.g., 30th percentile of magnitudes
-
-        # flatten last two dims (H, W_r)
-        mag_flat_for_quantile = mag.flatten(
-            start_dim=self.dims[0],
-            end_dim=self.dims[1]
-        )
-        # out shape = (B, C, H * W_r) 
-
-        # Apply quantile over the last dimension (H * W)
-        thresh_flat_output = torch.quantile(
-            mag_flat_for_quantile,
-            self.thresh_quantile,
-            dim=-1,
-            keepdim=True
-        )
-        # out shape = (B, C, 1)
+    def extra_repr(self):
+        return (f"amp_factor={self.amp_factor}, "
+                f"thresh_quantile={self.thresh_quantile}, dims={self.dims}")
 
 
-        # to apply correctly, we need a shape like (B, C, 1, 1)
-        thresh = thresh_flat_output.unsqueeze(-1)
-        # out shape = (B, C, 1, 1)
+class freq_amp_layer_keras(keras.Layer if keras is not None else object):
+    """Keras (torch backend only) FreqAmp layer for channels-last ``(B, H, W, C)`` input."""
 
-        # mask to isolate weak frequencies
-        mask = (mag < thresh).float()
-
-        # amplify weak frequencies
-        scale = 1.0 + (self.amp_factor - 1.0) * mask 
-
-        # appply amplification
-        z_amp = z * scale
-
-        # return to spa
-        y = fft.irfftn(z_amp, dim=self.dims)  
-
-        return y
-    
-
-class freq_amp_layer_keras(keras.Layer):
     def __init__(self, amp_factor=2.0, thresh_quantile=0.3, dims=(-2, -1), **kwargs):
+        if keras is None:
+            raise ImportError("freq_amp_layer_keras needs keras with KERAS_BACKEND=torch")
         super().__init__(**kwargs)
-        self.amp_factor = amp_factor
-        self.thresh_quantile = thresh_quantile
-        self.dims = dims
+        self.amp_factor = float(amp_factor)
+        self.thresh_quantile = float(thresh_quantile)
+        self.dims = tuple(dims)
 
     def call(self, x):
-        # x: (B, H, W, C)
-        # move C to front so fft ops are on trailing dims
-        x_t = x.permute(0, 3, 1, 2)          # (B, C, H, W)
-
-        H, W = x_t.shape[-2], x_t.shape[-1]
-        z = fft.rfftn(x_t, s=(H, W), dim=(-2, -1))   # (B, C, H, W//2+1)
-
-        mag = torch.abs(z)                             # (B, C, H, W//2+1)
-        mag_flat = mag.flatten(start_dim=-2)           # (B, C, H*(W//2+1))
-
-        thresh = torch.quantile(mag_flat, self.thresh_quantile, dim=-1, keepdim=True)
-        thresh = thresh.unsqueeze(-1)                  # (B, C, 1, 1)
-
-        mask = (mag < thresh).float()
-        scale = 1.0 + (self.amp_factor - 1.0) * mask
-        z_amp = z * scale
-
-        y = fft.irfftn(z_amp, s=(H, W), dim=(-2, -1)) # (B, C, H, W)
-        return y.permute(0, 2, 3, 1)                   # (B, H, W, C)
+        x_t = x.permute(0, 3, 1, 2)                              # (B, C, H, W): FFT on trailing dims
+        y = freq_amp(x_t, self.amp_factor, self.thresh_quantile, self.dims)
+        return y.permute(0, 2, 3, 1)                             # back to (B, H, W, C)
 
     def get_config(self):
         base = super().get_config()
-        return {**base, "amp_factor": self.amp_factor, 
+        return {**base, "amp_factor": self.amp_factor,
                 "thresh_quantile": self.thresh_quantile, "dims": self.dims}
-
-
-# def freq_amp_layer_keras(x, amp_factor=2.0, thresh_quantile=0.3, dims=(-3, -2)):
-#     """
-#     Frequency-domain amplification layer.
-
-#     This layer applies a real FFT over the last two spatial dimensions,
-#     identifies low-magnitude frequency coefficients, and amplifies them
-#     by a fixed factor. The threshold is defined per sample and per channel
-#     using a magnitude quantile over the 2D frequency map.
-
-#     Steps:
-#         1. Transform input to the frequency domain with `rfftn`.
-#         2. Compute the magnitude of each frequency coefficient.
-#         3. Compute a per-(batch, channel) threshold using `thresh_quantile`.
-#         4. Mark coefficients with magnitude below the threshold as "weak".
-#         5. Multiply weak coefficients by `amp_factor`.
-#         6. Transform back to the spatial domain with `irfftn`.
-
-#     Args:
-#         amp_factor (float, default=2.0):
-#             Multiplicative boost applied to weak frequency coefficients.
-#             - `amp_factor > 1.0` amplifies weak frequencies
-#             - `amp_factor = 1.0` leaves them unchanged
-#             - `amp_factor < 1.0` suppresses them
-
-#         thresh_quantile (float, default=0.3):
-#             Quantile used to define weak coefficients. For example,
-#             `0.3` means the bottom 30% of frequency magnitudes
-#             (per sample, per channel) are considered weak.
-
-#         dims (tuple[int, int], default=(-2, -1)):
-#             Dimensions over which to apply the FFT. Typically these are
-#             the last two spatial dimensions `(H, W)`.
-
-#     Input:
-#         x (Tensor):
-#             Real-valued tensor of shape `(B, C, H, W)`.
-
-#     Output:
-#         Tensor:
-#             Real-valued tensor of shape `(B, C, H, W)`.
-
-#     Notes:
-#         - Because `rfftn` is used, only the non-redundant half of the last
-#           frequency dimension is stored internally.
-#         - The threshold is computed independently for each batch element
-#           and channel.
-#         - Amplifying low-magnitude frequencies may also amplify noise, so
-#           the effect should be validated for the target task.
-#     """
-
-#     # fft middle 2 dims (H, W)
-#     z = fft.rfftn(x, dim=dims)
-#     # out shape = (B, W_r, H, C)
-#     # where W_r = W // 2 + 1
-#     # out dtype = torch.complex64 
-
-#     # compute abs value 
-#     mag = torch.abs(z)
-#     # out shape = (B, H, W_r, C)
-#     # out dtype = float32
-
-#     # Compute threshold: e.g., 30th percentile of magnitudes
-
-#     # flatten middle two dims (H, W_r)
-#     mag_flat_for_quantile = mag.flatten(
-#         start_dim=dims[1],
-#         end_dim=dims[2]
-#     )
-#     # out shape = (B, H * W_r, C) 
-
-#     # Apply quantile over the middle dimension (H * W_r)
-#     thresh_flat_output = torch.quantile(
-#         mag_flat_for_quantile,
-#         thresh_quantile,
-#         dim=-2,
-#         keepdim=True
-#     )
-#     # out shape = (B, 1, C)
-
-
-#     # to apply correctly, we need a shape like (B, 1, 1, C)
-#     thresh = thresh_flat_output.unsqueeze(-2)
-#     # out shape = (B, 1, 1, C)
-
-#     # mask to isolate weak frequencies
-#     mask = (mag < thresh).float()
-
-#     # amplify weak frequencies
-#     scale = 1.0 + (amp_factor - 1.0) * mask 
-
-#     # appply amplification
-#     z_amp = z * scale
-
-#     # return to spa
-#     y = fft.irfftn(z_amp, dim=dims)  
-
-#     return y
-
-
