@@ -1,0 +1,5 @@
+torch>=2.0
+torchvision>=0.15
+numpy
+# Optional, only for the *_keras builders and src/torch_to_keras_layer.py (needs KERAS_BACKEND=torch):
+# keras>=3.0

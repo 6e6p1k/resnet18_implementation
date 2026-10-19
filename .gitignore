@@ -21,3 +21,8 @@ Thumbs.db
 # Virtual environments
 venv/
 .env/
+
+# Saved weights and exports
+*.pt
+*.pth
+*.onnx
