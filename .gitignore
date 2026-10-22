@@ -21,3 +21,8 @@ Thumbs.db
 # Virtual environments
 venv/
 .env/
+
+# Model weights
+*.pt
+*.pth
+*.onnx

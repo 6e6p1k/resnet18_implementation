@@ -1,7 +1,7 @@
 import keras
 from keras import layers
 from torch import nn
-from src.models.freq_amp_res_block import freq_amp_block_keras, freq_amp_block_torch
+from src.models.freq_amp_res_block import freq_amp_block_keras, freq_amp_block_torch, learnable_freq_amp_block_keras
 
 
 # torch
@@ -11,7 +11,7 @@ class amp_freq_resnet18_torch(nn.Module):
 
         # stem
         self.in_channels = 64
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(3, 2, 1)
@@ -75,6 +75,35 @@ def amp_freq_resnet18_keras(input_shape, num_classes, amp_factors, thresh_quanti
 
     x = freq_amp_block_keras(x, 512, 2, amp_factors[3], thresh_quantiles[3])
     x = freq_amp_block_keras(x, 512, 1, amp_factors[3], thresh_quantiles[3])
+
+    # cls
+    x = layers.GlobalAveragePooling2D()(x)
+    outputs = layers.Dense(num_classes)(x)
+
+    return keras.Model(inputs, outputs)
+
+
+def learnable_amp_freq_resnet18_keras(input_shape, num_classes, thresh_quantiles):
+    inputs = keras.Input(shape=input_shape)
+
+    # stem
+    x = layers.Conv2D(64, 7, strides=2, padding="same", use_bias=False)(inputs)
+    x = layers.BatchNormalization()(x)
+    x = layers.ReLU()(x)
+    x = layers.MaxPooling2D(pool_size=3, strides=2, padding="same")(x)
+
+    # residual blocks [2, 2, 2, 2]
+    x = learnable_freq_amp_block_keras(x, 64, 1, thresh_quantiles[0])
+    x = learnable_freq_amp_block_keras(x, 64, 1, thresh_quantiles[0])
+
+    x = learnable_freq_amp_block_keras(x, 128, 2, thresh_quantiles[1])
+    x = learnable_freq_amp_block_keras(x, 128, 1, thresh_quantiles[1])
+
+    x = learnable_freq_amp_block_keras(x, 256, 2, thresh_quantiles[2])
+    x = learnable_freq_amp_block_keras(x, 256, 1, thresh_quantiles[2])
+
+    x = learnable_freq_amp_block_keras(x, 512, 2, thresh_quantiles[3])
+    x = learnable_freq_amp_block_keras(x, 512, 1, thresh_quantiles[3])
 
     # cls
     x = layers.GlobalAveragePooling2D()(x)

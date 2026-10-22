@@ -34,7 +34,7 @@ class basic_block_torch(nn.Module):
         out = self.bn2(out)
 
         # merge 
-        out.add(self.shortcut(x))
+        out = out + self.shortcut(x)
         out = self.relu(out)
 
         return out

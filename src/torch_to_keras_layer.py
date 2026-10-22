@@ -4,17 +4,8 @@ import torch.nn as nn
 from typing import Optional, Tuple
 
 
+# wraps a torch module as a keras layer, output shape comes from a dummy forward pass
 class TorchLayerWrapper(keras.layers.Layer):
-    """
-    Wraps any PyTorch nn.Module as a Keras layer.
-    Output shape is inferred automatically via a dummy forward pass.
-
-    Args:
-        module:      A PyTorch nn.Module instance.
-        name:        Optional name for the Keras layer.
-        trainable:   Whether the layer's weights should be trainable.
-    """
-
     def __init__(
         self,
         module: nn.Module,
@@ -31,7 +22,7 @@ class TorchLayerWrapper(keras.layers.Layer):
                 f"Keras backend must be 'torch', got '{keras.backend.backend()}'."
             )
 
-        # bypass Keras attribute tracking to prevent auto-wrapping in TorchModuleWrapper
+        # keep keras from wrapping the module itself
         object.__setattr__(self, '_module', module)
         self._output_shape_cache: Optional[Tuple] = None
 
@@ -68,19 +59,4 @@ def torch_to_keras_layer(
     name: Optional[str] = None,
     trainable: bool = True,
 ) -> TorchLayerWrapper:
-    """
-    Wraps a PyTorch nn.Module into a Keras layer.
-
-    Args:
-        module:    A PyTorch nn.Module instance to wrap.
-        name:      Optional name for the Keras layer.
-        trainable: Whether the layer's weights should be trainable (default: True).
-
-    Returns:
-        A TorchLayerWrapper — a Keras layer that runs the torch module.
-
-    Raises:
-        TypeError:  If module is not an nn.Module.
-        ValueError: If Keras backend is not set to 'torch'.
-    """
     return TorchLayerWrapper(module, name=name, trainable=trainable)

@@ -8,7 +8,7 @@ _src  = _here.parent                           # src/
 sys.path.append(str(_src))
 sys.path.append(str(_here))
 from torch import nn
-from freq_amp_layer import freq_amp_layer_keras, freq_amp_layer_torch
+from freq_amp_layer import freq_amp_layer_keras, freq_amp_layer_torch, learnable_freq_amp_layer_keras
 from keras import layers
 
 
@@ -76,6 +76,33 @@ def freq_amp_block_keras(x, out_channels, stride=1, amp_factor=2.0, thresh_quant
 
     # amplify weak frequencies
     shortcut = freq_amp_layer_keras(amp_factor=amp_factor, thresh_quantile=thresh_quantile)(shortcut)
+
+    # merge
+    x = layers.Add()([x, shortcut])
+    x = layers.ReLU()(x)
+
+    return x
+
+
+def learnable_freq_amp_block_keras(x, out_channels, stride=1, thresh_quantile=0.3):
+    in_channels = x.shape[-1]
+    shortcut = x
+
+    # main path
+    x = layers.Conv2D(out_channels, 3, strides=stride, padding="same", use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.ReLU()(x)
+
+    x = layers.Conv2D(out_channels, 3, strides=1, padding="same", use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+
+    # shortcut path
+    if stride != 1 or in_channels != out_channels:
+        shortcut = layers.Conv2D(out_channels, 1, strides=stride, padding="valid", use_bias=False)(shortcut)
+        shortcut = layers.BatchNormalization()(shortcut)
+
+    # rescale weak frequencies with a learned per-channel gain
+    shortcut = learnable_freq_amp_layer_keras(thresh_quantile=thresh_quantile)(shortcut)
 
     # merge
     x = layers.Add()([x, shortcut])
